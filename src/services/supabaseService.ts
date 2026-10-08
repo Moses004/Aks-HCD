@@ -90,11 +90,18 @@ export const supabaseService = {
     try {
       const { data, error } = await client.from('activities').select('id').limit(1);
       if (error) {
-        if (error.code === '42P01') {
+        if (
+          error.code === '42P01' || 
+          error.code === 'PGRST204' || 
+          error.code === 'PGRST200' ||
+          error.message?.toLowerCase().includes('schema cache') ||
+          error.message?.toLowerCase().includes('relation') ||
+          error.message?.toLowerCase().includes('table')
+        ) {
           return {
             connected: true,
             hasTables: false,
-            message: 'Connected to Supabase! The "activities" table is not created yet. Run the provided SQL migration in Supabase SQL Editor.',
+            message: 'Connected to Supabase! The "activities" table has not been created yet. Copy and run the SQL migration below in your Supabase SQL Editor.',
           };
         }
         return {

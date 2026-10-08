@@ -96,39 +96,54 @@ CREATE TABLE IF NOT EXISTS public.activities (
   lga_id TEXT NOT NULL,
   lga_name TEXT NOT NULL,
   title TEXT NOT NULL,
-  description TEXT,
-  sector TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'DRAFT',
-  beneficiaries INTEGER DEFAULT 0,
-  budget NUMERIC DEFAULT 0,
-  location TEXT,
-  latitude NUMERIC,
-  longitude NUMERIC,
-  reported_by TEXT NOT NULL,
+  pillar TEXT NOT NULL,
+  sub_category TEXT,
+  community TEXT,
+  lat DOUBLE PRECISION DEFAULT 5.0377,
+  lng DOUBLE PRECISION DEFAULT 7.9128,
+  beneficiaries_total INTEGER DEFAULT 0,
+  beneficiaries_male INTEGER DEFAULT 0,
+  beneficiaries_female INTEGER DEFAULT 0,
+  youth_beneficiaries INTEGER DEFAULT 0,
+  budget_ngn NUMERIC DEFAULT 0,
+  start_date DATE,
+  completion_date DATE,
+  lead_officer TEXT,
+  officer_contact TEXT,
+  status TEXT DEFAULT 'DRAFT',
+  overall_progress INTEGER DEFAULT 0,
+  milestones JSONB DEFAULT '[]'::jsonb,
+  media_assets JSONB DEFAULT '[]'::jsonb,
+  submission_notes TEXT,
+  rejection_reason TEXT,
+  reviewed_by TEXT,
+  reviewed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  sync_status TEXT DEFAULT 'SYNCED',
-  verification_notes TEXT
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. Audit Logs Table
+-- 2. Audit Trail Table
 CREATE TABLE IF NOT EXISTS public.audit_logs (
   id TEXT PRIMARY KEY,
-  activity_id TEXT,
-  action TEXT NOT NULL,
-  performed_by TEXT NOT NULL,
-  user_role TEXT NOT NULL,
   timestamp TIMESTAMPTZ DEFAULT NOW(),
-  details JSONB
+  activity_id TEXT,
+  activity_title TEXT,
+  lga_id TEXT,
+  performed_by TEXT NOT NULL,
+  role TEXT NOT NULL,
+  action TEXT NOT NULL,
+  notes TEXT
 );
 
--- 3. PTR Test & Health Logs
+-- 3. PTR Security & Ledger Test Runs
 CREATE TABLE IF NOT EXISTS public.ptr_test_logs (
   id TEXT PRIMARY KEY,
-  test_type TEXT NOT NULL,
-  status TEXT NOT NULL,
-  details JSONB,
-  executed_at TIMESTAMPTZ DEFAULT NOW()
+  timestamp TIMESTAMPTZ DEFAULT NOW(),
+  test_vector TEXT NOT NULL,
+  passed BOOLEAN NOT NULL,
+  summary TEXT NOT NULL,
+  payload JSONB DEFAULT '{}'::jsonb,
+  executed_by TEXT
 );
 
 -- Enable Row Level Security (RLS)
@@ -137,16 +152,41 @@ ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ptr_test_logs ENABLE ROW LEVEL SECURITY;
 
 -- Allow public read & write access with anon key
+DROP POLICY IF EXISTS "Allow public read activities" ON public.activities;
 CREATE POLICY "Allow public read activities" ON public.activities FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow public insert activities" ON public.activities;
 CREATE POLICY "Allow public insert activities" ON public.activities FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "Allow public update activities" ON public.activities;
 CREATE POLICY "Allow public update activities" ON public.activities FOR UPDATE USING (true);
+DROP POLICY IF EXISTS "Allow public delete activities" ON public.activities;
 CREATE POLICY "Allow public delete activities" ON public.activities FOR DELETE USING (true);
 
+DROP POLICY IF EXISTS "Allow public read audit_logs" ON public.audit_logs;
 CREATE POLICY "Allow public read audit_logs" ON public.audit_logs FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow public insert audit_logs" ON public.audit_logs;
 CREATE POLICY "Allow public insert audit_logs" ON public.audit_logs FOR INSERT WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Allow public read ptr_test_logs" ON public.ptr_test_logs;
 CREATE POLICY "Allow public read ptr_test_logs" ON public.ptr_test_logs FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Allow public insert ptr_test_logs" ON public.ptr_test_logs;
 CREATE POLICY "Allow public insert ptr_test_logs" ON public.ptr_test_logs FOR INSERT WITH CHECK (true);
+
+-- 4. Enable Supabase Realtime for instant multi-user synchronization
+ALTER PUBLICATION supabase_realtime ADD TABLE public.activities;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.audit_logs;
+
+-- 5. Supabase Storage Bucket for Field Evidence & Media
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('hcd-evidence-vault', 'hcd-evidence-vault', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+DROP POLICY IF EXISTS "Allow public read evidence vault" ON storage.objects;
+CREATE POLICY "Allow public read evidence vault" ON storage.objects 
+FOR SELECT USING (bucket_id = 'hcd-evidence-vault');
+
+DROP POLICY IF EXISTS "Allow public upload evidence vault" ON storage.objects;
+CREATE POLICY "Allow public upload evidence vault" ON storage.objects 
+FOR INSERT WITH CHECK (bucket_id = 'hcd-evidence-vault');
 ```
 
 ---
