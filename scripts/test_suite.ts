@@ -143,16 +143,16 @@ async function runTestSuite() {
     'Table user_profiles exists and accessible.'
   );
 
-  // 4. Function Execution Diagnostic Probe
-  console.log('\n--- 4. Helper Function & Diagnostic Notice Verification ---');
+  // 4. Helper Function & Function Execution Grant Verification
+  console.log('\n--- 4. Helper Function Execution Grant Verification ---');
   const { error: fnErr } = await client.rpc('aks_hcd_current_lga');
-  const isFunctionPermissionDenied = Boolean(fnErr?.code === '42501' || fnErr?.message?.includes('permission denied'));
+  const { error: roleFnErr } = await client.rpc('aks_hcd_current_role');
+  const functionsExecutable = !fnErr && !roleFnErr;
   recordTest(
-    'Helper Function Grant Detection',
+    'Helper Function Execution Grants (Live Verified)',
     'SECURITY',
-    isFunctionPermissionDenied,
-    'Service layer accurately identifies PostgreSQL 42501 function grant requirement and triggers administrator diagnostic banner.',
-    fnErr?.message
+    functionsExecutable,
+    'PostgreSQL helper functions aks_hcd_current_lga() and aks_hcd_current_role() executed successfully with active grants.'
   );
 
   // Summary Report
