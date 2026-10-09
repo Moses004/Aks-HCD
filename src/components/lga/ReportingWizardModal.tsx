@@ -39,6 +39,7 @@ export const ReportingWizardModal: React.FC<ReportingWizardModalProps> = ({
   const { currentUser } = useAuth();
   const { addActivity, isOnline, uploadEvidenceToSupabase, isSupabaseActive } = useData();
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
@@ -866,9 +867,26 @@ export const ReportingWizardModal: React.FC<ReportingWizardModalProps> = ({
                         onChange={async (e) => {
                           const file = e.target.files?.[0];
                           if (!file) return;
+                          setUploadError(null);
+
+                          // Size validation: 25MB ceiling
+                          if (file.size > 25 * 1024 * 1024) {
+                            setUploadError(`File too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). Max permitted size is 25MB.`);
+                            return;
+                          }
+
+                          // Mime validation
+                          const validTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf', 'video/mp4'];
+                          if (file.type && !validTypes.includes(file.type)) {
+                            setUploadError('Invalid format. Accepted types: JPEG, PNG, WEBP, PDF, MP4.');
+                            return;
+                          }
+
                           setIsUploadingMedia(true);
                           try {
                             let mediaUrl = URL.createObjectURL(file);
+                            let storagePath: string | undefined;
+
                             if (isOnline && isSupabaseActive) {
                               const uploadRes = await uploadEvidenceToSupabase(
                                 file,
@@ -876,15 +894,24 @@ export const ReportingWizardModal: React.FC<ReportingWizardModalProps> = ({
                                 lgaObj.id,
                                 `activity-${Date.now()}`
                               );
-                              if (uploadRes.success && uploadRes.signedUrl) {
+
+                              if (!uploadRes.success) {
+                                setUploadError(`Storage upload failed: ${uploadRes.error || 'Server rejected file'}`);
+                                return;
+                              }
+
+                              if (uploadRes.signedUrl) {
                                 mediaUrl = uploadRes.signedUrl;
                               }
+                              storagePath = uploadRes.storagePath;
                             }
+
                             const fileSizeMb = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
                             const newPhoto: VerificationMedia = {
                               id: `proof-${Date.now()}`,
-                              type: file.type.startsWith('video') ? 'video' : 'photo',
+                              type: file.type.startsWith('video') ? 'video' : file.type.includes('pdf') ? 'document' : 'photo',
                               url: mediaUrl,
+                              storagePath,
                               caption: `Field evidence: ${file.name}`,
                               fileName: file.name,
                               fileSize: fileSizeMb,
@@ -895,12 +922,19 @@ export const ReportingWizardModal: React.FC<ReportingWizardModalProps> = ({
                             setUploadedPhotos((prev) => [...prev, newPhoto]);
                           } catch (err: any) {
                             console.warn('Media upload error:', err);
+                            setUploadError(err.message || 'Evidence upload failed');
                           } finally {
                             setIsUploadingMedia(false);
                           }
                         }}
                       />
                     </label>
+
+                    {uploadError && (
+                      <div className="w-full text-center mt-2 text-xs font-semibold text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-2">
+                        {uploadError}
+                      </div>
+                    )}
 
                     <button
                       type="button"

@@ -120,8 +120,12 @@ export const ExecutivePanel: React.FC<ExecutivePanelProps> = ({
       if (pendingSyncCount > 0) {
         await syncOfflineQueue();
       }
-      const timeStr = new Date(res.timestamp).toLocaleTimeString();
-      setActionFeedback(`PTR test telemetry synchronized successfully with State Cloud at ${timeStr}.`);
+      if (res.success && res.timestamp) {
+        const timeStr = new Date(res.timestamp).toLocaleTimeString();
+        setActionFeedback(`PTR test telemetry synchronized successfully with State Cloud at ${timeStr}.`);
+      } else {
+        setActionFeedback(`PTR sync notice: ${res.error || 'Cloud synchronization failed'}`);
+      }
       setTimeout(() => setActionFeedback(null), 4000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Sync failed';

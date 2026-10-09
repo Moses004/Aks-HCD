@@ -24,8 +24,24 @@ export interface DatabaseOperationResult<T = void> {
   details?: string;
 }
 
+export interface AuditLogResult {
+  success: boolean;
+  persistedToCloud: boolean;
+  error?: string;
+}
+
+export interface FetchAuditLogsResult {
+  success: boolean;
+  data: AuditLog[];
+  error?: string;
+}
+
 // Convert application HCDActivity to Supabase row format
-export const activityToRow = (a: HCDActivity, createdByUserId?: string) => ({
+export const activityToRow = (
+  a: HCDActivity,
+  createdByUserId?: string,
+  updatedByUserId?: string
+) => ({
   id: a.id,
   lga_id: a.lgaId,
   lga_name: a.lgaName,
@@ -33,8 +49,9 @@ export const activityToRow = (a: HCDActivity, createdByUserId?: string) => ({
   pillar: a.pillar,
   sub_category: a.subCategory || '',
   community: a.community || '',
-  lat: a.coordinates?.lat ?? 5.0377,
-  lng: a.coordinates?.lng ?? 7.9128,
+  // Preserve null coordinates if unknown - do not invent default values
+  lat: a.coordinates?.lat !== undefined ? a.coordinates.lat : null,
+  lng: a.coordinates?.lng !== undefined ? a.coordinates.lng : null,
   beneficiaries_total: Math.max(0, Number(a.beneficiariesTotal) || 0),
   beneficiaries_male: Math.max(0, Number(a.beneficiariesMale) || 0),
   beneficiaries_female: Math.max(0, Number(a.beneficiariesFemale) || 0),
@@ -52,7 +69,10 @@ export const activityToRow = (a: HCDActivity, createdByUserId?: string) => ({
   rejection_reason: a.rejectionReason || null,
   reviewed_by: a.reviewedBy || null,
   reviewed_at: a.reviewedAt || null,
-  created_by: createdByUserId || undefined,
+  created_by: createdByUserId || a.createdBy || null,
+  updated_by: updatedByUserId || a.updatedBy || null,
+  attendance_registry_url: a.attendanceRegistryUrl || null,
+  attendance_sheet_file_name: a.attendanceSheetFileName || null,
   created_at: a.createdAt || new Date().toISOString(),
   updated_at: a.updatedAt || new Date().toISOString(),
 });
@@ -66,10 +86,10 @@ export const rowToActivity = (r: any): HCDActivity => ({
   pillar: r.pillar,
   subCategory: r.sub_category || '',
   community: r.community || '',
-  coordinates: {
-    lat: Number(r.lat) || 5.0377,
-    lng: Number(r.lng) || 7.9128,
-  },
+  coordinates:
+    r.lat !== null && r.lng !== null && !isNaN(Number(r.lat)) && !isNaN(Number(r.lng))
+      ? { lat: Number(r.lat), lng: Number(r.lng) }
+      : undefined,
   beneficiariesTotal: Number(r.beneficiaries_total) || 0,
   beneficiariesMale: Number(r.beneficiaries_male) || 0,
   beneficiariesFemale: Number(r.beneficiaries_female) || 0,
@@ -87,6 +107,10 @@ export const rowToActivity = (r: any): HCDActivity => ({
   rejectionReason: r.rejection_reason || '',
   reviewedBy: r.reviewed_by || '',
   reviewedAt: r.reviewed_at || '',
+  createdBy: r.created_by || undefined,
+  updatedBy: r.updated_by || undefined,
+  attendanceRegistryUrl: r.attendance_registry_url || undefined,
+  attendanceSheetFileName: r.attendance_sheet_file_name || undefined,
   createdAt: r.created_at || new Date().toISOString(),
   updatedAt: r.updated_at || new Date().toISOString(),
   syncStatus: 'synced',
@@ -120,7 +144,7 @@ export const supabaseService = {
           return {
             connected: true,
             hasTables: false,
-            message: 'Connected to Supabase! The "activities" table has not been created yet. Copy and run the SQL migration script in your Supabase SQL Editor.',
+            message: 'Connected to Supabase! The "activities" table has not been created yet.',
           };
         }
         if (error.code === '42501' && error.message?.includes('aks_hcd_current_lga')) {
@@ -128,7 +152,7 @@ export const supabaseService = {
             connected: true,
             hasTables: true,
             hasFunctionGrants: false,
-            message: 'Connected to Supabase! The tables exist, but EXECUTE permission on helper function aks_hcd_current_lga() must be granted. Run migration 20261008_fix_security_and_grants.sql in Supabase SQL Editor.',
+            message: 'Connected to Supabase! Function grants needed for aks_hcd_current_lga().',
           };
         }
         return {
@@ -175,13 +199,12 @@ export const supabaseService = {
       if (error) {
         console.warn('Supabase fetchActivities error:', error);
         
-        // Check for permission denied on helper function (42501)
         if (error.code === '42501' && error.message?.includes('aks_hcd_current_lga')) {
           return {
             status: 'SCHEMA_MISMATCH',
             error: error.message,
             code: error.code,
-            diagnostic: 'PostgreSQL error 42501: aks_hcd_current_lga requires GRANT EXECUTE ON FUNCTION public.aks_hcd_current_lga() TO anon, authenticated;',
+            diagnostic: 'PostgreSQL error 42501: aks_hcd_current_lga requires execute grant',
           };
         }
 
@@ -227,7 +250,7 @@ export const supabaseService = {
     }
 
     try {
-      const row = activityToRow(activity, userSession?.id);
+      const row = activityToRow(activity, userSession?.id, userSession?.id);
       const { data, error } = await client
         .from('activities')
         .insert(row)
@@ -259,7 +282,8 @@ export const supabaseService = {
    */
   async updateActivity(
     id: string,
-    updates: Partial<HCDActivity>
+    updates: Partial<HCDActivity>,
+    userSession?: UserSession
   ): Promise<DatabaseOperationResult<HCDActivity>> {
     const client = getSupabaseClient();
     if (!client) {
@@ -269,6 +293,7 @@ export const supabaseService = {
     try {
       const updateRow: Record<string, any> = {
         updated_at: new Date().toISOString(),
+        updated_by: userSession?.id || null,
       };
 
       if (updates.title !== undefined) updateRow.title = updates.title;
@@ -276,8 +301,8 @@ export const supabaseService = {
       if (updates.subCategory !== undefined) updateRow.sub_category = updates.subCategory;
       if (updates.community !== undefined) updateRow.community = updates.community;
       if (updates.coordinates !== undefined) {
-        updateRow.lat = updates.coordinates.lat;
-        updateRow.lng = updates.coordinates.lng;
+        updateRow.lat = updates.coordinates ? updates.coordinates.lat : null;
+        updateRow.lng = updates.coordinates ? updates.coordinates.lng : null;
       }
       if (updates.beneficiariesTotal !== undefined) updateRow.beneficiaries_total = updates.beneficiariesTotal;
       if (updates.beneficiariesMale !== undefined) updateRow.beneficiaries_male = updates.beneficiariesMale;
@@ -296,6 +321,8 @@ export const supabaseService = {
       if (updates.rejectionReason !== undefined) updateRow.rejection_reason = updates.rejectionReason;
       if (updates.reviewedBy !== undefined) updateRow.reviewed_by = updates.reviewedBy;
       if (updates.reviewedAt !== undefined) updateRow.reviewed_at = updates.reviewedAt;
+      if (updates.attendanceRegistryUrl !== undefined) updateRow.attendance_registry_url = updates.attendanceRegistryUrl;
+      if (updates.attendanceSheetFileName !== undefined) updateRow.attendance_sheet_file_name = updates.attendanceSheetFileName;
 
       const { data, error } = await client
         .from('activities')
@@ -324,7 +351,7 @@ export const supabaseService = {
   },
 
   /**
-   * Delete activity from Supabase
+   * Delete activity from Supabase with verification
    */
   async deleteActivity(id: string): Promise<DatabaseOperationResult> {
     const client = getSupabaseClient();
@@ -333,7 +360,11 @@ export const supabaseService = {
     }
 
     try {
-      const { error } = await client.from('activities').delete().eq('id', id);
+      const { error, count } = await client
+        .from('activities')
+        .delete({ count: 'exact' })
+        .eq('id', id);
+
       if (error) {
         console.warn('Supabase deleteActivity error:', error);
         return {
@@ -342,6 +373,14 @@ export const supabaseService = {
           code: error.code,
         };
       }
+
+      if (count === 0) {
+        return {
+          success: false,
+          error: 'No matching record was deleted. The record may have already been removed or deletion was unauthorized.',
+        };
+      }
+
       return { success: true };
     } catch (err: any) {
       return {
@@ -352,32 +391,52 @@ export const supabaseService = {
   },
 
   /**
-   * Upsert activity (used during initial migration / sync reconciliation)
+   * Upsert activity (insert or update on conflict) with verified session
    */
-  async upsertActivity(activity: HCDActivity): Promise<boolean> {
+  async upsertActivity(
+    activity: HCDActivity,
+    userSession?: UserSession
+  ): Promise<DatabaseOperationResult<HCDActivity>> {
     const client = getSupabaseClient();
-    if (!client) return false;
+    if (!client) {
+      return { success: false, error: 'Supabase client not initialized' };
+    }
 
     try {
-      const row = activityToRow(activity);
-      const { error } = await client.from('activities').upsert(row);
+      const row = activityToRow(activity, userSession?.id, userSession?.id);
+      const { data, error } = await client
+        .from('activities')
+        .upsert(row)
+        .select()
+        .single();
+
       if (error) {
-        console.warn('Supabase upsertActivity error:', error.message);
-        return false;
+        console.warn('Supabase upsertActivity error:', error);
+        return {
+          success: false,
+          error: error.message,
+          code: error.code,
+          details: error.details,
+        };
       }
-      return true;
-    } catch (err) {
-      console.warn('Supabase upsertActivity network exception:', err);
-      return false;
+
+      return { success: true, data: rowToActivity(data) };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err.message || 'Failed to upsert activity in Supabase',
+      };
     }
   },
 
   /**
-   * Insert audit log entry directly into public.audit_logs
+   * Insert audit log entry directly into public.audit_logs with authenticated actor ID
    */
-  async insertAuditLog(log: AuditLog): Promise<boolean> {
+  async insertAuditLog(log: AuditLog, userSession?: UserSession): Promise<AuditLogResult> {
     const client = getSupabaseClient();
-    if (!client) return false;
+    if (!client) {
+      return { success: false, persistedToCloud: false, error: 'Supabase client not initialized' };
+    }
 
     try {
       const { error } = await client.from('audit_logs').insert({
@@ -386,28 +445,32 @@ export const supabaseService = {
         activity_id: log.activityId || null,
         activity_title: log.activityTitle || null,
         lga_id: log.lgaId || null,
-        performed_by: log.performedBy,
-        role: log.role,
+        performed_by: userSession?.name || log.performedBy,
+        actor_user_id: userSession?.isAuthenticated ? userSession.id : log.actorUserId || null,
+        role: userSession?.role || log.role,
         action: log.action,
         notes: log.notes || null,
       });
+
       if (error) {
         console.warn('Supabase insertAuditLog error:', error.message);
-        return false;
+        return { success: false, persistedToCloud: false, error: error.message };
       }
-      return true;
-    } catch (err) {
-      console.warn('Supabase insertAuditLog network exception:', err);
-      return false;
+      return { success: true, persistedToCloud: true };
+    } catch (err: any) {
+      console.warn('Supabase insertAuditLog exception:', err);
+      return { success: false, persistedToCloud: false, error: err.message || 'Network error' };
     }
   },
 
   /**
-   * Fetch audit logs for current user scope
+   * Fetch audit logs for current user scope with explicit error handling
    */
-  async fetchAuditLogs(lgaId?: string): Promise<AuditLog[]> {
+  async fetchAuditLogs(lgaId?: string): Promise<FetchAuditLogsResult> {
     const client = getSupabaseClient();
-    if (!client) return [];
+    if (!client) {
+      return { success: false, data: [], error: 'Supabase client not initialized' };
+    }
 
     try {
       let query = client.from('audit_logs').select('*');
@@ -415,36 +478,53 @@ export const supabaseService = {
         query = query.eq('lga_id', lgaId);
       }
       const { data, error } = await query.order('timestamp', { ascending: false }).limit(200);
-      if (error || !data) return [];
 
-      return data.map((r: any) => ({
+      if (error) {
+        return { success: false, data: [], error: error.message };
+      }
+
+      if (!data) {
+        return { success: true, data: [] };
+      }
+
+      const mapped: AuditLog[] = data.map((r: any) => ({
         id: r.id,
         timestamp: r.timestamp,
         activityId: r.activity_id || undefined,
         activityTitle: r.activity_title || undefined,
         lgaId: r.lga_id || undefined,
         performedBy: r.performed_by,
+        actorUserId: r.actor_user_id || undefined,
         role: r.role,
         action: r.action,
         notes: r.notes || undefined,
+        persistedToCloud: true,
       }));
-    } catch {
-      return [];
+
+      return { success: true, data: mapped };
+    } catch (err: any) {
+      return { success: false, data: [], error: err.message || 'Failed to fetch audit logs' };
     }
   },
 
   /**
-   * Record PTR verification ledger log
+   * Record PTR verification ledger log with authenticated actor identity
    */
   async recordPtrTestLog(
     vector: string,
     passed: boolean,
     summary: string,
     payload: unknown,
-    executedBy: string
-  ): Promise<boolean> {
+    userSession: UserSession
+  ): Promise<{ success: boolean; error?: string }> {
     const client = getSupabaseClient();
-    if (!client) return false;
+    if (!client) {
+      return { success: false, error: 'Database client unavailable' };
+    }
+
+    if (!userSession.isAuthenticated) {
+      return { success: false, error: 'Authentication required for PTR ledger recording.' };
+    }
 
     try {
       const { error } = await client.from('ptr_test_logs').insert({
@@ -454,16 +534,17 @@ export const supabaseService = {
         passed,
         summary,
         payload,
-        executed_by: executedBy,
+        executed_by: userSession.name,
+        executed_by_user_id: userSession.id,
       });
+
       if (error) {
         console.warn('Supabase recordPtrTestLog error:', error.message);
-        return false;
+        return { success: false, error: error.message };
       }
-      return true;
-    } catch (err) {
-      console.warn('Supabase recordPtrTestLog network exception:', err);
-      return false;
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'PTR ledger write exception' };
     }
   },
 
@@ -474,11 +555,24 @@ export const supabaseService = {
     file: File | Blob,
     fileName: string,
     lgaId: string,
-    activityId: string
+    activityId: string,
+    userSession?: UserSession
   ): Promise<{ success: boolean; storagePath?: string; signedUrl?: string; error?: string }> {
     const client = getSupabaseClient();
     if (!client) {
       return { success: false, error: 'Supabase client not available' };
+    }
+
+    // Size validation: max 25MB
+    const MAX_SIZE_BYTES = 25 * 1024 * 1024;
+    if (file.size > MAX_SIZE_BYTES) {
+      return { success: false, error: 'File exceeds maximum permitted size of 25MB.' };
+    }
+
+    // Allowed mime types
+    const validMimes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    if (file.type && !validMimes.includes(file.type)) {
+      return { success: false, error: 'Invalid file format. Only JPEG, PNG, WEBP, and PDF documents are accepted.' };
     }
 
     try {
@@ -489,7 +583,7 @@ export const supabaseService = {
         .from('hcd-evidence-vault')
         .upload(storagePath, file, {
           cacheControl: '3600',
-          upsert: true,
+          upsert: false,
         });
 
       if (error) {
@@ -502,10 +596,17 @@ export const supabaseService = {
         .from('hcd-evidence-vault')
         .createSignedUrl(data.path, 3600);
 
+      if (signErr || !signedData?.signedUrl) {
+        return {
+          success: false,
+          error: signErr?.message || 'File uploaded but failed to generate secure access token.',
+        };
+      }
+
       return {
         success: true,
         storagePath: data.path,
-        signedUrl: signedData?.signedUrl,
+        signedUrl: signedData.signedUrl,
       };
     } catch (err: any) {
       console.warn('Supabase Storage upload exception:', err);
@@ -607,9 +708,11 @@ export const supabaseService = {
                 activityTitle: r.activity_title || undefined,
                 lgaId: r.lga_id || undefined,
                 performedBy: r.performed_by,
+                actorUserId: r.actor_user_id || undefined,
                 role: r.role,
                 action: r.action,
                 notes: r.notes || undefined,
+                persistedToCloud: true,
               });
             }
           }

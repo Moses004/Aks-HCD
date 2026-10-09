@@ -35,7 +35,7 @@ interface DataContextType {
   rejectActivity: (id: string, reason: string) => Promise<{ success: boolean; error?: string }>;
   deleteActivity: (id: string) => Promise<{ success: boolean; error?: string }>;
   revertToDraft: (id: string) => Promise<{ success: boolean; error?: string }>;
-  seedBaselineActivities: () => Promise<{ success: boolean; count: number; error?: string }>;
+  seedBaselineActivities: () => Promise<{ success: boolean; count: number; failedCount?: number; error?: string }>;
   resetToInitialData: () => void;
   runPtrTest001Separation: () => { passed: boolean; message: string; payload: unknown };
   runPtrTest002MathValidation: () => { passed: boolean; message: string; payload: unknown };
@@ -43,7 +43,7 @@ interface DataContextType {
   isSyncing: boolean;
   autoSyncEnabled: boolean;
   toggleAutoSync: () => void;
-  syncPtrTestData: () => Promise<{ success: boolean; timestamp: string }>;
+  syncPtrTestData: () => Promise<{ success: boolean; timestamp?: string; error?: string }>;
   pendingPtrSync: boolean;
   isSupabaseActive: boolean;
   supabaseUrl: string;
@@ -164,11 +164,15 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           }
 
           // Fetch real audit logs
-          const logs = await supabaseService.fetchAuditLogs(
+          const logsResult = await supabaseService.fetchAuditLogs(
             currentUser.role === 'lga_admin' ? currentUser.assignedLgaId : undefined
           );
-          if (isMounted && logs.length > 0) {
-            setAuditLogs(logs);
+          if (isMounted) {
+            if (logsResult.success) {
+              setAuditLogs(logsResult.data);
+            } else {
+              console.warn('Supabase fetchAuditLogs error:', logsResult.error);
+            }
           }
         } catch (err: any) {
           if (!isMounted) return;
@@ -233,7 +237,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
   }, [isEffectiveOnline]);
 
-  // Audit logging helper
+  // Audit logging helper - structured return and authentic actor assignment
   const logAction = async (
     action: AuditLog['action'],
     performedBy: string,
@@ -244,23 +248,37 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       lgaId?: string;
       notes?: string;
     }
-  ) => {
+  ): Promise<{ success: boolean; persistedToCloud: boolean; error?: string }> => {
     const newLog: AuditLog = {
       id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       timestamp: new Date().toISOString(),
       action,
-      performedBy,
-      role,
+      performedBy: currentUser.isAuthenticated ? currentUser.name : performedBy,
+      actorUserId: currentUser.isAuthenticated ? currentUser.id : undefined,
+      role: currentUser.isAuthenticated ? currentUser.role : role,
       activityId: details?.activityId,
       activityTitle: details?.activityTitle,
       lgaId: details?.lgaId,
       notes: details?.notes,
+      persistedToCloud: false,
     };
 
-    setAuditLogs((prev) => [newLog, ...prev]);
+    // If sandbox demo mode or offline or unauthenticated: keep in local state only
+    if (currentUser.isDemo || !isEffectiveOnline || !isSupabaseReady() || !currentUser.isAuthenticated) {
+      setAuditLogs((prev) => [newLog, ...prev]);
+      return { success: true, persistedToCloud: false };
+    }
 
-    if (isEffectiveOnline && isSupabaseReady()) {
-      supabaseService.insertAuditLog(newLog).catch((err) => console.warn('Audit log write error:', err));
+    try {
+      const res = await supabaseService.insertAuditLog(newLog, currentUser);
+      newLog.persistedToCloud = res.persistedToCloud;
+      setAuditLogs((prev) => [newLog, ...prev]);
+      return res;
+    } catch (err: any) {
+      console.warn('Audit log write error:', err);
+      newLog.persistedToCloud = false;
+      setAuditLogs((prev) => [newLog, ...prev]);
+      return { success: false, persistedToCloud: false, error: err.message };
     }
   };
 
@@ -272,7 +290,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // 1. Tenant boundary assertion
     const check = assertTenantAccess(data.lgaId);
     if (!check.allowed) {
-      logAction('CROSS_TENANT_VIOLATION_BLOCKED', currentUser.name, currentUser.role, {
+      await logAction('CROSS_TENANT_VIOLATION_BLOCKED', currentUser.name, currentUser.role, {
         lgaId: data.lgaId,
         activityTitle: data.title,
         notes: check.error,
@@ -299,6 +317,32 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const newId = `act-${data.lgaId}-${Date.now()}`;
     const initialStatus: ActivityStatus = submitForApproval ? 'PENDING_APPROVAL' : 'DRAFT';
 
+    // Demo Mode: sandbox isolation - do not write to production database!
+    if (currentUser.isDemo) {
+      const demoActivity: HCDActivity = {
+        ...data,
+        id: newId,
+        status: initialStatus,
+        createdAt: now,
+        updatedAt: now,
+        isOfflineCreated: false,
+        syncStatus: 'synced',
+      };
+      setActivities((prev) => [demoActivity, ...prev]);
+      await logAction(
+        submitForApproval ? 'SUBMITTED' : 'CREATED_DRAFT',
+        currentUser.name,
+        currentUser.role,
+        {
+          activityId: newId,
+          activityTitle: data.title,
+          lgaId: data.lgaId,
+          notes: 'Recorded in isolated sandbox preview mode (production cloud write bypassed).',
+        }
+      );
+      return { success: true, id: newId };
+    }
+
     const newActivity: HCDActivity = {
       ...data,
       id: newId,
@@ -310,7 +354,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
 
     // If online: perform asynchronous cloud database write
-    if (isEffectiveOnline && isSupabaseReady()) {
+    if (isEffectiveOnline && isSupabaseReady() && currentUser.isAuthenticated) {
       const res = await supabaseService.insertActivity(newActivity, currentUser);
 
       if (!res.success) {
@@ -346,7 +390,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setActivities((prev) => [committed, ...prev]);
       cacheActivitiesLocally([committed, ...activities]);
 
-      logAction(
+      await logAction(
         submitForApproval ? 'SUBMITTED' : 'CREATED_DRAFT',
         currentUser.name,
         currentUser.role,
@@ -381,7 +425,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     cacheActivitiesLocally([newActivity, ...activities]);
     await refreshPendingQueue();
 
-    logAction('CREATED_DRAFT', currentUser.name, currentUser.role, {
+    await logAction('CREATED_DRAFT', currentUser.name, currentUser.role, {
       activityId: newId,
       activityTitle: data.title,
       lgaId: data.lgaId,
@@ -403,7 +447,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     const check = assertTenantAccess(existing.lgaId);
     if (!check.allowed) {
-      logAction('CROSS_TENANT_VIOLATION_BLOCKED', currentUser.name, currentUser.role, {
+      await logAction('CROSS_TENANT_VIOLATION_BLOCKED', currentUser.name, currentUser.role, {
         activityId: id,
         lgaId: existing.lgaId,
         notes: check.error,
@@ -411,15 +455,12 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return { success: false, error: check.error };
     }
 
-    // Immutability check for published records by LGA admin
-    const isOnlyMilestoneUpdate = Object.keys(updates).every(
-      (k) => k === 'milestones' || k === 'overallProgress' || k === 'updatedAt'
-    );
-    if (existing.status === 'PUBLISHED' && currentUser.role === 'lga_admin' && !isOnlyMilestoneUpdate) {
+    // Immutability constraint: Published activities are locked under database security policy
+    if (existing.status === 'PUBLISHED' && currentUser.role === 'lga_admin') {
       return {
         success: false,
         error:
-          'Data Immutability Constraint: Core attributes of records in PUBLISHED state are locked to maintain state audit integrity. Contact State Super-Admin to revert.',
+          'Data Immutability Constraint: Activities in PUBLISHED status are locked under database security policies. Request State Super-Administrator to revert before modifying core attributes or milestones.',
       };
     }
 
@@ -447,8 +488,20 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       updatedAt: new Date().toISOString(),
     };
 
-    if (isEffectiveOnline && isSupabaseReady()) {
-      const res = await supabaseService.updateActivity(id, updates);
+    // Demo Mode: sandbox isolation
+    if (currentUser.isDemo) {
+      setActivities((prev) => prev.map((a) => (a.id === id ? updatedItem : a)));
+      await logAction('MODIFIED', currentUser.name, currentUser.role, {
+        activityId: id,
+        activityTitle: updatedItem.title,
+        lgaId: updatedItem.lgaId,
+        notes: 'Updated in local demonstration sandbox.',
+      });
+      return { success: true };
+    }
+
+    if (isEffectiveOnline && isSupabaseReady() && currentUser.isAuthenticated) {
+      const res = await supabaseService.updateActivity(id, updates, currentUser);
 
       if (!res.success) {
         return {
@@ -461,7 +514,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setActivities((prev) => prev.map((a) => (a.id === id ? committed : a)));
       cacheActivitiesLocally(activities.map((a) => (a.id === id ? committed : a)));
 
-      logAction('MODIFIED', currentUser.name, currentUser.role, {
+      await logAction('MODIFIED', currentUser.name, currentUser.role, {
         activityId: id,
         activityTitle: updatedItem.title,
         lgaId: updatedItem.lgaId,
@@ -503,12 +556,19 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return { success: false, error: 'Unauthorized: Only State Super-Admins can approve and publish activities.' };
     }
     const now = new Date().toISOString();
-    return updateActivity(id, {
+    const res = await updateActivity(id, {
       status: 'PUBLISHED',
       reviewedBy: currentUser.name,
       reviewedAt: now,
       submissionNotes: notes,
     });
+    if (res.success) {
+      await logAction('APPROVED_PUBLISHED', currentUser.name, currentUser.role, {
+        activityId: id,
+        notes: notes || 'Activity approved and published to official state register.',
+      });
+    }
+    return res;
   };
 
   // Reject Activity (State Super-Admin only)
@@ -520,12 +580,19 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return { success: false, error: 'A specific feedback note or correction reason is required.' };
     }
     const now = new Date().toISOString();
-    return updateActivity(id, {
+    const res = await updateActivity(id, {
       status: 'REJECTED_DRAFT',
       rejectionReason: reason.trim(),
       reviewedBy: currentUser.name,
       reviewedAt: now,
     });
+    if (res.success) {
+      await logAction('REJECTED', currentUser.name, currentUser.role, {
+        activityId: id,
+        notes: `Activity rejected with feedback: ${reason.trim()}`,
+      });
+    }
+    return res;
   };
 
   // Delete Activity
@@ -540,7 +607,19 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       return { success: false, error: 'Published activities can only be deleted or archived by State Super-Admin.' };
     }
 
-    if (isEffectiveOnline && isSupabaseReady()) {
+    // Demo Mode: local sandbox delete
+    if (currentUser.isDemo) {
+      setActivities((prev) => prev.filter((a) => a.id !== id));
+      await logAction('MODIFIED', currentUser.name, currentUser.role, {
+        activityId: id,
+        activityTitle: existing.title,
+        lgaId: existing.lgaId,
+        notes: 'Deleted in local demonstration sandbox.',
+      });
+      return { success: true };
+    }
+
+    if (isEffectiveOnline && isSupabaseReady() && currentUser.isAuthenticated) {
       const res = await supabaseService.deleteActivity(id);
       if (!res.success) {
         return { success: false, error: `Deletion failed: ${res.error}` };
@@ -561,7 +640,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
 
     setActivities((prev) => prev.filter((a) => a.id !== id));
-    logAction('MODIFIED', currentUser.name, currentUser.role, {
+    await logAction('MODIFIED', currentUser.name, currentUser.role, {
       activityId: id,
       activityTitle: existing.title,
       lgaId: existing.lgaId,
@@ -579,25 +658,63 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   // Seed baseline 31 LGA activities to cloud
-  const seedBaselineActivities = async (): Promise<{ success: boolean; count: number; error?: string }> => {
-    if (currentUser.role !== 'state_admin') {
-      return { success: false, count: 0, error: 'Only State Super-Admin may initialize official state baseline dataset.' };
+  const seedBaselineActivities = async (): Promise<{
+    success: boolean;
+    count: number;
+    failedCount?: number;
+    error?: string;
+  }> => {
+    if (!currentUser.isAuthenticated || currentUser.role !== 'state_admin' || currentUser.isDemo) {
+      return {
+        success: false,
+        count: 0,
+        failedCount: 0,
+        error: 'Unauthorized: Only verified State Super-Administrators may import baseline records.',
+      };
     }
+
+    if (!isEffectiveOnline || !isSupabaseReady()) {
+      return {
+        success: false,
+        count: 0,
+        failedCount: 0,
+        error: 'Offline: Cannot seed baseline activities while disconnected from cloud database.',
+      };
+    }
+
     setIsSyncing(true);
+    let successCount = 0;
+    let failedCount = 0;
+
     try {
-      let count = 0;
       for (const act of INITIAL_ACTIVITIES) {
-        const ok = await supabaseService.upsertActivity(act);
-        if (ok) count++;
+        const res = await supabaseService.upsertActivity(act, currentUser);
+        if (res.success) {
+          successCount++;
+        } else {
+          failedCount++;
+        }
       }
+
       // Re-fetch clean dataset from cloud
       const res = await supabaseService.fetchActivities(currentUser);
       if (res.status === 'SUCCESS') {
         setActivities(res.data);
+        cacheActivitiesLocally(res.data);
       }
-      return { success: true, count };
+
+      await logAction('MODIFIED', currentUser.name, currentUser.role, {
+        notes: `Baseline ingestion complete: ${successCount} verified, ${failedCount} failures.`,
+      });
+
+      return {
+        success: successCount > 0 && failedCount === 0,
+        count: successCount,
+        failedCount,
+        error: failedCount > 0 ? `${failedCount} records failed during import.` : undefined,
+      };
     } catch (err: any) {
-      return { success: false, count: 0, error: err.message || 'Seeding failed' };
+      return { success: false, count: successCount, failedCount, error: err.message || 'Seeding failed' };
     } finally {
       setIsSyncing(false);
     }
@@ -609,6 +726,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       throw new Error('Device is offline. Connect to network or disable offline simulation to sync.');
     }
 
+    if (!currentUser.isAuthenticated || currentUser.isDemo) {
+      throw new Error('Authentication Required: An authorized session is required to synchronize offline operations.');
+    }
+
     setIsSyncing(true);
     let syncedCount = 0;
     let failedCount = 0;
@@ -617,20 +738,36 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       const ops = await getPendingOperations();
 
       for (const op of ops) {
+        // Enforce authorized owner
+        if (currentUser.role !== 'state_admin' && op.userContext?.id && op.userContext.id !== currentUser.id) {
+          console.warn(`Skipping operation ${op.id}: owned by ${op.userContext.id}, logged in as ${currentUser.id}`);
+          continue;
+        }
+
+        // Enforce tenant boundary
+        if (currentUser.role === 'lga_admin' && op.lgaId !== currentUser.assignedLgaId) {
+          console.warn(`Skipping operation ${op.id}: target LGA ${op.lgaId} does not match assigned ${currentUser.assignedLgaId}`);
+          continue;
+        }
+
         try {
           await updateOperation({ ...op, status: 'processing', lastAttemptAt: new Date().toISOString() });
 
           let writeSuccess = false;
+          let writeError: string | undefined;
 
           if (op.operationType === 'CREATE') {
-            const res = await supabaseService.insertActivity(op.payload, op.userContext as any);
+            const res = await supabaseService.insertActivity(op.payload, currentUser);
             writeSuccess = res.success;
+            writeError = res.error;
           } else if (op.operationType === 'UPDATE') {
-            const res = await supabaseService.updateActivity(op.recordId, op.payload);
+            const res = await supabaseService.updateActivity(op.recordId, op.payload, currentUser);
             writeSuccess = res.success;
+            writeError = res.error;
           } else if (op.operationType === 'DELETE') {
             const res = await supabaseService.deleteActivity(op.recordId);
             writeSuccess = res.success;
+            writeError = res.error;
           }
 
           if (writeSuccess) {
@@ -639,7 +776,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
             // Update matching activity sync status
             setActivities((prev) =>
-              prev.map((a) => (a.id === op.recordId ? { ...a, syncStatus: 'synced' } : a))
+              prev.map((a) => (a.id === op.recordId ? { ...a, syncStatus: 'synced', isOfflineCreated: false } : a))
             );
           } else {
             failedCount++;
@@ -647,7 +784,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               ...op,
               status: 'failed',
               retryCount: op.retryCount + 1,
-              errorDetails: 'Cloud write rejected by server policy.',
+              errorDetails: writeError || 'Cloud write rejected by server policy.',
             });
           }
         } catch (opErr: any) {
@@ -676,10 +813,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     try {
       let writeSuccess = false;
       if (target.operationType === 'CREATE') {
-        const res = await supabaseService.insertActivity(target.payload, target.userContext as any);
+        const res = await supabaseService.insertActivity(target.payload, currentUser);
         writeSuccess = res.success;
       } else if (target.operationType === 'UPDATE') {
-        const res = await supabaseService.updateActivity(target.recordId, target.payload);
+        const res = await supabaseService.updateActivity(target.recordId, target.payload, currentUser);
         writeSuccess = res.success;
       } else if (target.operationType === 'DELETE') {
         const res = await supabaseService.deleteActivity(target.recordId);
@@ -723,21 +860,42 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
   };
 
-  const syncPtrTestData = async () => {
+  const syncPtrTestData = async (): Promise<{ success: boolean; timestamp?: string; error?: string }> => {
+    if (!currentUser.isAuthenticated || currentUser.isDemo) {
+      return {
+        success: false,
+        error: 'Authentication Required: An active administrative session is required to record PTR telemetry.',
+      };
+    }
+
+    if (!isEffectiveOnline || !isSupabaseReady()) {
+      return {
+        success: false,
+        error: 'Network Offline: Cannot synchronize PTR telemetry while disconnected from cloud database.',
+      };
+    }
+
     const now = new Date().toISOString();
+    const res = await supabaseService.recordPtrTestLog(
+      'PTR-TELEMETRY-SYNC',
+      true,
+      `State Executive Cloud PTR sync synchronized successfully by ${currentUser.name}`,
+      { timestamp: now, actorUserId: currentUser.id, role: currentUser.role },
+      currentUser
+    );
+
+    if (!res.success) {
+      return {
+        success: false,
+        error: `Cloud PTR ledger rejected entry: ${res.error || 'Database write failed'}`,
+      };
+    }
+
+    // Update local state ONLY after cloud confirmation!
     setLastPtrSyncTime(now);
     localStorage.setItem(STORAGE_KEY_LAST_PTR_SYNC, now);
     setPendingPtrSync(false);
 
-    if (isEffectiveOnline && isSupabaseReady()) {
-      supabaseService.recordPtrTestLog(
-        'PTR-TELEMETRY-SYNC',
-        true,
-        `State Executive Cloud PTR sync synchronized successfully by ${currentUser.name}`,
-        { timestamp: now },
-        currentUser.name
-      ).catch(console.warn);
-    }
     return { success: true, timestamp: now };
   };
 
@@ -754,7 +912,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     lgaId: string,
     activityId: string
   ) => {
-    return supabaseService.uploadEvidenceFile(file, fileName, lgaId, activityId);
+    return supabaseService.uploadEvidenceFile(file, fileName, lgaId, activityId, currentUser);
   };
 
   const resetToInitialData = () => {

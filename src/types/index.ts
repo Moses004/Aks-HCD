@@ -58,6 +58,7 @@ export interface VerificationMedia {
   id: string;
   type: 'photo' | 'document' | 'video';
   url: string;
+  storagePath?: string;
   caption: string;
   fileName: string;
   fileSize: string;
@@ -77,7 +78,7 @@ export interface HCDActivity {
   pillar: PillarId;
   subCategory: string;
   community: string;
-  coordinates: {
+  coordinates?: {
     lat: number;
     lng: number;
   };
@@ -102,6 +103,8 @@ export interface HCDActivity {
   reviewedAt?: string;
   createdAt: string;
   updatedAt: string;
+  createdBy?: string;
+  updatedBy?: string;
   isOfflineCreated?: boolean;
   syncStatus?: 'synced' | 'pending_sync';
 }
@@ -115,6 +118,8 @@ export interface UserSession {
   assignedLgaName?: string;
   department?: string;
   isAuthenticated: boolean;
+  isDemo?: boolean;
+  profileStatus?: 'active' | 'missing' | 'inactive';
   lastSignInAt?: string;
 }
 
@@ -125,7 +130,9 @@ export interface AuditLog {
   activityTitle?: string;
   lgaId?: string;
   performedBy: string;
+  actorUserId?: string;
   role: Role;
   action: 'CREATED_DRAFT' | 'SUBMITTED' | 'APPROVED_PUBLISHED' | 'REJECTED' | 'MODIFIED' | 'CROSS_TENANT_VIOLATION_BLOCKED';
   notes?: string;
+  persistedToCloud?: boolean;
 }

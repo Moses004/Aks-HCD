@@ -14,7 +14,7 @@ interface AuthContextType {
   switchLga: (lgaId: string) => void;
   isSimulatedOffline: boolean;
   toggleOfflineSimulation: () => void;
-  // Demonstration / Sandbox helper for UI preview
+  // Demonstration / Sandbox preview (strictly isolated from cloud writes)
   loginAsDemo: (role: Role, lgaId?: string) => void;
   loginAs: (role: Role, lgaId?: string) => void;
 }
@@ -25,44 +25,14 @@ const PUBLIC_GUEST_USER: UserSession = {
   email: 'citizen@akwaibomstate.gov.ng',
   role: 'public',
   isAuthenticated: false,
-};
-
-const DEFAULT_DEMO_USERS: Record<string, UserSession> = {
-  state_admin: {
-    id: 'demo-state-01',
-    name: 'Dr. Bassey Okon',
-    email: 'executive.hcd@akwaibomstate.gov.ng',
-    role: 'state_admin',
-    department: "Governor's Cabinet & State HCD Council",
-    isAuthenticated: true,
-  },
-  uyo_admin: {
-    id: 'demo-uyo-01',
-    name: 'Engr. Emem Akpan',
-    email: 'hcd.desk@uyo.ak.gov.ng',
-    role: 'lga_admin',
-    assignedLgaId: 'uyo',
-    assignedLgaName: 'Uyo',
-    department: 'Uyo LGA Department of Community & Human Development',
-    isAuthenticated: true,
-  },
+  isDemo: false,
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<UserSession>(() => {
-    // Check saved local session or start as public / last active
-    const saved = localStorage.getItem('aks_hcd_current_user');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        return DEFAULT_DEMO_USERS.state_admin;
-      }
-    }
-    return DEFAULT_DEMO_USERS.state_admin;
-  });
+  // Always initialize as unauthenticated public citizen - never trust local storage as proof of identity!
+  const [currentUser, setCurrentUser] = useState<UserSession>(PUBLIC_GUEST_USER);
 
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [isSimulatedOffline, setIsSimulatedOffline] = useState<boolean>(() => {
@@ -82,11 +52,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const { data, error } = await client.auth.getSession();
         if (error) {
           console.warn('Supabase getSession error:', error.message);
+          setCurrentUser(PUBLIC_GUEST_USER);
         } else if (data?.session?.user) {
           await loadUserProfile(data.session.user);
+        } else {
+          setCurrentUser(PUBLIC_GUEST_USER);
         }
       } catch (err) {
         console.warn('Exception during Supabase session restoration:', err);
+        setCurrentUser(PUBLIC_GUEST_USER);
       } finally {
         setAuthLoading(false);
       }
@@ -97,10 +71,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // Listen to real-time auth state changes (sign in, sign out, token refresh)
     const { data: authListener } = client.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_IN' && session?.user) {
+        setAuthLoading(true);
         await loadUserProfile(session.user);
+        setAuthLoading(false);
       } else if (event === 'SIGNED_OUT') {
         setCurrentUser(PUBLIC_GUEST_USER);
-        localStorage.removeItem('aks_hcd_current_user');
+        setAuthLoading(false);
       } else if (event === 'TOKEN_REFRESHED' && session?.user) {
         await loadUserProfile(session.user);
       }
@@ -111,7 +87,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
   }, []);
 
-  // Fetch verified user profile from public.user_profiles table
+  // Fetch verified user profile strictly from public.user_profiles table
   const loadUserProfile = async (supabaseUser: any) => {
     const client = getSupabaseClient();
     if (!client) return;
@@ -124,48 +100,62 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         .single();
 
       if (error || !profile) {
-        // Fallback: authenticated user without assigned profile row defaults to public viewer
-        const userEmail = supabaseUser.email || '';
-        const isGovAdmin = userEmail.includes('admin') || userEmail.includes('executive');
-        const role: Role = isGovAdmin ? 'state_admin' : 'public';
-
-        const updated: UserSession = {
+        // Missing profile: strictly default to unprivileged public role!
+        // Never grant administrative privileges based on email substring or heuristics
+        const unassignedUser: UserSession = {
           id: supabaseUser.id,
-          name: supabaseUser.user_metadata?.full_name || userEmail.split('@')[0] || 'State Officer',
-          email: userEmail,
-          role,
-          department: supabaseUser.user_metadata?.department || 'Government Directorate',
+          name: supabaseUser.user_metadata?.full_name || supabaseUser.email?.split('@')[0] || 'Authenticated User',
+          email: supabaseUser.email || '',
+          role: 'public',
+          department: 'Public Observer (Awaiting Official Administrative Profile Provisioning)',
           isAuthenticated: true,
+          isDemo: false,
+          profileStatus: 'missing',
           lastSignInAt: supabaseUser.last_sign_in_at || new Date().toISOString(),
         };
-        setCurrentUser(updated);
-        localStorage.setItem('aks_hcd_current_user', JSON.stringify(updated));
+        setCurrentUser(unassignedUser);
         return;
       }
 
       const assignedLga = profile.lga_id ? getLgaById(profile.lga_id) : undefined;
+      const verifiedRole: Role =
+        profile.role === 'state_admin' || profile.role === 'lga_admin'
+          ? profile.role
+          : 'public';
+
       const verifiedUser: UserSession = {
         id: supabaseUser.id,
         name: supabaseUser.user_metadata?.full_name || supabaseUser.email?.split('@')[0] || 'Desk Officer',
         email: supabaseUser.email || '',
-        role: (profile.role as Role) || 'public',
-        assignedLgaId: profile.lga_id || undefined,
-        assignedLgaName: assignedLga?.name,
-        department: profile.department || `${assignedLga?.name || 'State'} Directorate`,
+        role: verifiedRole,
+        assignedLgaId: verifiedRole === 'lga_admin' ? (profile.lga_id || undefined) : undefined,
+        assignedLgaName: verifiedRole === 'lga_admin' ? assignedLga?.name : undefined,
+        department:
+          profile.department ||
+          (verifiedRole === 'state_admin'
+            ? "Governor's Cabinet & State HCD Council"
+            : `${assignedLga?.name || 'LGA'} Secretariat`),
         isAuthenticated: true,
+        isDemo: false,
+        profileStatus: 'active',
         lastSignInAt: supabaseUser.last_sign_in_at || new Date().toISOString(),
       };
 
       setCurrentUser(verifiedUser);
-      localStorage.setItem('aks_hcd_current_user', JSON.stringify(verifiedUser));
     } catch (err) {
       console.warn('Error fetching user_profile:', err);
+      setCurrentUser({
+        id: supabaseUser.id,
+        name: supabaseUser.email || 'Authenticated User',
+        email: supabaseUser.email || '',
+        role: 'public',
+        department: 'Profile Inspection Error',
+        isAuthenticated: true,
+        isDemo: false,
+        profileStatus: 'missing',
+      });
     }
   };
-
-  useEffect(() => {
-    localStorage.setItem('aks_hcd_current_user', JSON.stringify(currentUser));
-  }, [currentUser]);
 
   useEffect(() => {
     localStorage.setItem('aks_hcd_simulated_offline', String(isSimulatedOffline));
@@ -238,22 +228,32 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const loginAsDemo = (role: Role, lgaId?: string) => {
+    // Demonstration sandbox mode: strictly isolated from production cloud writes
     if (role === 'state_admin') {
-      setCurrentUser(DEFAULT_DEMO_USERS.state_admin);
+      setCurrentUser({
+        id: 'demo-state-sandbox',
+        name: 'State Administrator (Sandbox Preview)',
+        email: 'sandbox.state@demo.akwaibomstate.gov.ng',
+        role: 'state_admin',
+        department: "Governor's Cabinet & State HCD Council (Sandbox Preview)",
+        isAuthenticated: false,
+        isDemo: true,
+      });
     } else if (role === 'public') {
       setCurrentUser(PUBLIC_GUEST_USER);
     } else if (role === 'lga_admin') {
       const targetLgaId = lgaId || 'uyo';
       const targetLga = getLgaById(targetLgaId) || ALL_31_LGAS[0];
       setCurrentUser({
-        id: `demo-${targetLga.id}-admin`,
-        name: `Desk Officer (${targetLga.name})`,
-        email: `hcd.desk@${targetLga.id}.ak.gov.ng`,
+        id: `demo-${targetLga.id}-sandbox`,
+        name: `Desk Officer (${targetLga.name}) (Sandbox Preview)`,
+        email: `sandbox.${targetLga.id}@demo.akwaibomstate.gov.ng`,
         role: 'lga_admin',
         assignedLgaId: targetLga.id,
         assignedLgaName: targetLga.name,
-        department: `${targetLga.name} Local Government Council Secretariat`,
-        isAuthenticated: true,
+        department: `${targetLga.name} LGA Secretariat (Sandbox Preview)`,
+        isAuthenticated: false,
+        isDemo: true,
       });
     }
   };

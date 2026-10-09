@@ -99,10 +99,14 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
 
   // Permission check: can current user edit milestone progress?
   // State Super-Admin can update milestones for any activity.
-  // LGA admin can update milestones for their assigned LGA.
+  // LGA admin can update milestones ONLY for draft/pending activities in their assigned LGA.
+  // Published activities are strictly locked under PostgreSQL RLS policies.
   const canEditMilestones =
     currentUser.role === 'state_admin' ||
-    (currentUser.role === 'lga_admin' && currentUser.assignedLgaId === activity.lgaId);
+    (currentUser.role === 'lga_admin' && currentUser.assignedLgaId === activity.lgaId && !isPublished);
+
+  const isLgaAdminLockedOut =
+    currentUser.role === 'lga_admin' && currentUser.assignedLgaId === activity.lgaId && isPublished;
 
   // Compute overall progress
   const currentOverallProgress =
@@ -178,7 +182,8 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
       setToastMessage('Milestones and phased completion rates updated successfully.');
       setTimeout(() => setToastMessage(null), 4000);
     } else {
-      alert(res.error || 'Failed to update milestones.');
+      setToastMessage(`Error: ${res.error || 'Failed to update milestones.'}`);
+      setTimeout(() => setToastMessage(null), 5000);
     }
   };
 
@@ -341,6 +346,16 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({
                     {completedPhasesCount} of {localMilestones.length} Phases Completed
                   </span>
                 </div>
+
+                {isLgaAdminLockedOut && (
+                  <div
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-semibold"
+                    title="Published activities are immutable under state database policy. Revert to draft through State Super-Admin to modify milestones."
+                  >
+                    <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    <span>Locked (Published)</span>
+                  </div>
+                )}
 
                 {canEditMilestones && (
                   <div>

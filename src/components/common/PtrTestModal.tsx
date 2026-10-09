@@ -52,8 +52,12 @@ export const PtrTestModal: React.FC<{ embedded?: boolean }> = ({ embedded = fals
     setSyncFeedback(null);
     try {
       const res = await syncPtrTestData();
-      const timeStr = new Date(res.timestamp).toLocaleTimeString();
-      setSyncFeedback(`PTR test data successfully synchronized with State Cloud at ${timeStr}.`);
+      if (res.success && res.timestamp) {
+        const timeStr = new Date(res.timestamp).toLocaleTimeString();
+        setSyncFeedback(`PTR test data successfully synchronized with State Cloud at ${timeStr}.`);
+      } else {
+        setSyncFeedback(`Sync failed: ${res.error || 'Ledger write rejected'}`);
+      }
       setTimeout(() => setSyncFeedback(null), 4000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Sync failed';
