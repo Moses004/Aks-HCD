@@ -55,7 +55,11 @@ export const isSupabaseReady = (): boolean => {
 };
 
 // Recommended SQL schema for user to execute in Supabase SQL Editor
-export const SUPABASE_SQL_SCHEMA = `-- 1. AKS-HCD Activities Table
+export const SUPABASE_SQL_SCHEMA = `-- 0. Function Execution Grants for Helper Functions
+GRANT EXECUTE ON FUNCTION public.aks_hcd_current_role() TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.aks_hcd_current_lga() TO anon, authenticated, service_role;
+
+-- 1. AKS-HCD Activities Table
 CREATE TABLE IF NOT EXISTS public.activities (
   id TEXT PRIMARY KEY,
   lga_id TEXT NOT NULL,

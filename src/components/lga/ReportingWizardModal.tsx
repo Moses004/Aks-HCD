@@ -22,6 +22,7 @@ import {
   Plus,
   Trash2,
   TrendingUp,
+  LocateFixed,
 } from 'lucide-react';
 
 interface ReportingWizardModalProps {
@@ -482,15 +483,32 @@ export const ReportingWizardModal: React.FC<ReportingWizardModalProps> = ({
                     className="w-full text-xs p-2 rounded border border-slate-300 bg-white font-mono"
                   />
                 </div>
-                <div className="col-span-2 text-[10px] flex items-center justify-between text-slate-500">
-                  <span className="flex items-center gap-1">
-                    <MapPin className="w-3 h-3 text-emerald-700" />
-                    Bound: Akwa Ibom State Coordinates (4.4°–5.6°N, 7.4°–8.5°E)
-                  </span>
+                <div className="col-span-2 text-[10px] flex items-center justify-between text-slate-500 pt-1 border-t border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (navigator.geolocation) {
+                        navigator.geolocation.getCurrentPosition(
+                          (pos) => {
+                            setLatitude(Number(pos.coords.latitude.toFixed(5)));
+                            setLongitude(Number(pos.coords.longitude.toFixed(5)));
+                          },
+                          (err) => {
+                            setErrorMsg('GPS detection: ' + err.message);
+                          },
+                          { enableHighAccuracy: true, timeout: 8000 }
+                        );
+                      }
+                    }}
+                    className="flex items-center gap-1 font-bold text-emerald-800 hover:text-emerald-950 transition-colors"
+                  >
+                    <LocateFixed className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>Auto-Capture Device GPS</span>
+                  </button>
                   {isGeoInAkwaIbom ? (
-                    <span className="text-emerald-700 font-bold">✓ Inside State Bounds</span>
+                    <span className="text-emerald-700 font-bold">✓ Inside Akwa Ibom Bounds</span>
                   ) : (
-                    <span className="text-amber-700 font-bold">⚠ Outside Bounds</span>
+                    <span className="text-amber-700 font-bold">⚠ Outside State Bounds</span>
                   )}
                 </div>
               </div>
@@ -858,8 +876,8 @@ export const ReportingWizardModal: React.FC<ReportingWizardModalProps> = ({
                                 lgaObj.id,
                                 `activity-${Date.now()}`
                               );
-                              if (uploadRes.success && uploadRes.url) {
-                                mediaUrl = uploadRes.url;
+                              if (uploadRes.success && uploadRes.signedUrl) {
+                                mediaUrl = uploadRes.signedUrl;
                               }
                             }
                             const fileSizeMb = (file.size / (1024 * 1024)).toFixed(1) + ' MB';

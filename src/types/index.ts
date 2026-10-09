@@ -114,6 +114,8 @@ export interface UserSession {
   assignedLgaId?: string; // Set when role === 'lga_admin'
   assignedLgaName?: string;
   department?: string;
+  isAuthenticated: boolean;
+  lastSignInAt?: string;
 }
 
 export interface AuditLog {

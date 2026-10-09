@@ -65,8 +65,11 @@ export const ExecutivePanel: React.FC<ExecutivePanelProps> = ({
     syncOfflineQueue,
     isSupabaseActive,
     supabaseUrl,
+    diagnosticNotice,
+    seedBaselineActivities,
   } = useData();
 
+  const [isSeeding, setIsSeeding] = useState(false);
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'trends' | 'barchart' | 'queue' | 'published' | 'comparative' | 'ptr'>(initialTab);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
@@ -288,6 +291,62 @@ export const ExecutivePanel: React.FC<ExecutivePanelProps> = ({
           >
             Switch to State Super-Admin
           </button>
+        </div>
+      )}
+
+      {diagnosticNotice && (
+        <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-xs flex items-start justify-between gap-3 animate-in fade-in">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+            <div>
+              <strong className="block font-bold text-amber-900">Database Permissions Notice:</strong>
+              <p className="text-amber-900/90 leading-relaxed mt-0.5">{diagnosticNotice}</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setIsSupabaseModalOpen(true)}
+            className="px-3 py-1.5 bg-amber-800 hover:bg-amber-700 text-white font-bold rounded-lg text-xs shrink-0 transition-colors"
+          >
+            View SQL Migration
+          </button>
+        </div>
+      )}
+
+      {activities.length === 0 && currentUser.role === 'state_admin' && (
+        <div className="p-6 rounded-2xl bg-gradient-to-r from-emerald-950 to-slate-900 text-white border border-emerald-800 shadow-md space-y-3 animate-in fade-in">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-widest text-[#D4AF37] block">
+                Database Initialization Active
+              </span>
+              <h3 className="text-base font-bold text-white mt-1">
+                Zero Activities in Cloud Database
+              </h3>
+              <p className="text-xs text-emerald-200/80 leading-relaxed max-w-2xl mt-1">
+                The database is clean and authenticated. You can record live grassroots projects directly through the LGA Desk Workspace, or initialize the verified 31-LGA Akwa Ibom State Baseline Dataset now.
+              </p>
+            </div>
+            <button
+              disabled={isSeeding}
+              onClick={async () => {
+                setIsSeeding(true);
+                try {
+                  const res = await seedBaselineActivities();
+                  if (res.success) {
+                    setActionFeedback(`Successfully seeded ${res.count} verified baseline activities across all 31 LGAs.`);
+                  } else {
+                    setActionFeedback(`Seeding error: ${res.error}`);
+                  }
+                } finally {
+                  setIsSeeding(false);
+                }
+              }}
+              className="px-4 py-2.5 bg-[#D4AF37] hover:bg-amber-400 text-emerald-950 text-xs font-black rounded-xl transition-all shadow-sm flex items-center gap-2 shrink-0 active:scale-95 disabled:opacity-50"
+            >
+              <Sparkles className="w-4 h-4" />
+              {isSeeding ? 'Seeding Baseline...' : 'Seed 31-LGA Baseline Dataset'}
+            </button>
+          </div>
         </div>
       )}
 

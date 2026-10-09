@@ -39,6 +39,56 @@ export const ReportExportModal: React.FC<ReportExportModalProps> = ({ isOpen, on
     window.print();
   };
 
+  const handleExportCsv = () => {
+    const headers = [
+      'ID',
+      'LGA',
+      'Title',
+      'Pillar',
+      'SubCategory',
+      'Community',
+      'BeneficiariesTotal',
+      'BeneficiariesMale',
+      'BeneficiariesFemale',
+      'YouthBeneficiaries',
+      'BudgetNGN',
+      'StartDate',
+      'CompletionDate',
+      'LeadOfficer',
+      'Status',
+      'OverallProgress',
+      'CreatedAt',
+    ];
+    const rows = activities.map((a) => [
+      `"${a.id}"`,
+      `"${a.lgaName}"`,
+      `"${a.title.replace(/"/g, '""')}"`,
+      `"${a.pillar}"`,
+      `"${a.subCategory}"`,
+      `"${a.community.replace(/"/g, '""')}"`,
+      a.beneficiariesTotal,
+      a.beneficiariesMale,
+      a.beneficiariesFemale,
+      a.youthBeneficiaries,
+      a.budgetNgn,
+      `"${a.startDate}"`,
+      `"${a.completionDate}"`,
+      `"${a.leadOfficer}"`,
+      `"${a.status}"`,
+      `${a.overallProgress || 0}%`,
+      `"${a.createdAt}"`,
+    ]);
+    const csv = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `AKS_HCD_Executive_Dossier_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] animate-in fade-in">
@@ -52,6 +102,13 @@ export const ReportExportModal: React.FC<ReportExportModalProps> = ({ isOpen, on
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={handleExportCsv}
+              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors border border-slate-700"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-400" />
+              Download CSV
+            </button>
             <button
               onClick={handlePrint}
               className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors"

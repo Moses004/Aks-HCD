@@ -18,8 +18,12 @@ export const OfflineSyncBanner: React.FC = () => {
     setSyncFeedback(null);
     try {
       const res = await syncOfflineQueue();
-      setSyncFeedback(`Successfully synchronized ${res.syncedCount} queued record(s) & PTR test ledger to state cloud.`);
-      setTimeout(() => setSyncFeedback(null), 4000);
+      if (res.failedCount > 0) {
+        setSyncFeedback(`Synchronized ${res.syncedCount} record(s); ${res.failedCount} requires retry or permission.`);
+      } else {
+        setSyncFeedback(`Successfully synchronized ${res.syncedCount} queued record(s) & PTR test ledger to state cloud.`);
+      }
+      setTimeout(() => setSyncFeedback(null), 4500);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Sync failed';
       setSyncFeedback(`Sync failed: ${msg}`);

@@ -90,6 +90,10 @@ The **AKS-HCD Platform** is an enterprise-grade Progressive Web Application (PWA
 To enable live persistence with your Supabase database, run the following SQL script in your [Supabase SQL Editor](https://app.supabase.com):
 
 ```sql
+-- 0. Function Execution Grants for Helper Functions
+GRANT EXECUTE ON FUNCTION public.aks_hcd_current_role() TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.aks_hcd_current_lga() TO anon, authenticated, service_role;
+
 -- 1. AKS-HCD Activities Table
 CREATE TABLE IF NOT EXISTS public.activities (
   id TEXT PRIMARY KEY,
